@@ -7,14 +7,15 @@ use syn::{parse_macro_input, Data, DataStruct, DeriveInput, Field, Fields, Field
 #[proc_macro_derive(Builder)]
 pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
+    generate_builder(input)
+        .unwrap_or_else(|e| e.to_compile_error())
+        .into()
+}
 
+fn generate_builder(input: DeriveInput) -> Result<TokenStream, syn::Error> {
     let struct_name = &input.ident;
     let builder_name = Ident::new(&format!("{}Builder", struct_name), Span::call_site());
-
-    let fields = match FieldsInfo::new(&input) {
-        Ok(info) => info,
-        Err(e) => return e.to_compile_error().into(),
-    };
+    let fields = FieldsInfo::new(&input)?;
 
     let init_exprs = fields.for_each(|name, _| {
         quote! { #name: None }
@@ -50,7 +51,7 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
             #(#builder_methods)*
         }
     };
-    result.into()
+    Ok(result)
 }
 
 struct FieldsInfo<'a> {
@@ -59,13 +60,12 @@ struct FieldsInfo<'a> {
 
 impl FieldsInfo<'_> {
     fn new(input: &DeriveInput) -> Result<FieldsInfo, syn::Error> {
-        let named_fields = get_named_fields(&input).ok_or(syn::Error::new(
+        let named_fields = named_fields_iter(&input).ok_or(syn::Error::new(
             Span::call_site(),
             "Cannot generate builder for this type",
         ))?;
 
         let names_and_types: Option<Vec<_>> = named_fields
-            .iter()
             .map(|f| Some((f.ident.clone()?, &f.ty)))
             .collect();
         let names_and_types = names_and_types.ok_or(syn::Error::new(
@@ -84,12 +84,12 @@ impl FieldsInfo<'_> {
     }
 }
 
-fn get_named_fields(input: &DeriveInput) -> Option<Vec<&Field>> {
+fn named_fields_iter(input: &DeriveInput) -> Option<impl Iterator<Item = &Field>> {
     match &input.data {
         Data::Struct(DataStruct {
             fields: Fields::Named(FieldsNamed { named, .. }),
             ..
-        }) => Some(named.iter().collect()),
+        }) => Some(named.iter()),
         _ => None,
     }
 }
