@@ -34,7 +34,15 @@ fn generate_builder(input: DeriveInput) -> Result<TokenStream, syn::Error> {
         }
     });
 
-    let result = quote! {
+    let builder_results = fields.for_each(|name, _| {
+        quote! {
+            #name: self.#name.clone().ok_or_else(|| Box::<std::error::Error>::from(
+                concat!("Required field '", stringify!(#name), "' has not been set.")
+            ))?
+        }
+    });
+
+    Ok(quote! {
         impl #struct_name {
             pub fn builder() -> #builder_name {
                 #builder_name {
@@ -49,9 +57,14 @@ fn generate_builder(input: DeriveInput) -> Result<TokenStream, syn::Error> {
 
         impl #builder_name {
             #(#builder_methods)*
+
+            pub fn build(&mut self) -> Result<#struct_name, Box<dyn std::error::Error>> {
+                Ok(#struct_name {
+                    #(#builder_results,)*
+                })
+            }
         }
-    };
-    Ok(result)
+    })
 }
 
 struct FieldsInfo<'a> {
