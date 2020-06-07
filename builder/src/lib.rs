@@ -3,7 +3,7 @@ extern crate proc_macro;
 use proc_macro2::{Ident, Span, TokenStream};
 use quote::quote;
 use syn::{
-    parse_macro_input, Data, DataStruct, DeriveInput, Field, Fields, FieldsNamed, GenericArgument,
+    parse_macro_input, spanned::Spanned, Data, DeriveInput, Fields, FieldsNamed, GenericArgument,
     PathArguments, Type,
 };
 
@@ -18,20 +18,20 @@ pub fn derive(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
 fn generate_builder(input: DeriveInput) -> Result<TokenStream, syn::Error> {
     let struct_name = &input.ident;
     let builder_name = Ident::new(&format!("{}Builder", struct_name), Span::call_site());
-    let fields = FieldsInfo::new(&input)?;
+    let fields = read_fields(&input)?;
 
-    let init_exprs = fields.for_each(|field| {
+    let init_exprs = fields.expand(|field| {
         let name = &field.name;
         quote! { #name: None }
     });
 
-    let builder_fields = fields.for_each(|field| {
+    let builder_fields = fields.expand(|field| {
         let name = &field.name;
         let ty = &field.ty;
         quote! { #name: Option<#ty> }
     });
 
-    let builder_methods = fields.for_each(|field| {
+    let builder_methods = fields.expand(|field| {
         let name = &field.name;
         let ty = &field.ty;
         quote! {
@@ -42,15 +42,15 @@ fn generate_builder(input: DeriveInput) -> Result<TokenStream, syn::Error> {
         }
     });
 
-    let builder_results = fields.for_each(|field| {
+    let builder_results = fields.expand(|field| {
         let name = &field.name;
         if field.is_optional {
             quote! { #name: self.#name.clone() }
         } else {
             quote! {
-                #name: self.#name.clone().ok_or_else(|| Box::<std::error::Error>::from(
-                    concat!("Required field '", stringify!(#name), "' has not been set.")
-                ))?
+                #name: self.#name.clone().ok_or(
+                    concat!("Required field '", stringify!(#name), "' has not been set.").to_owned()
+                )?
             }
         }
     });
@@ -71,7 +71,7 @@ fn generate_builder(input: DeriveInput) -> Result<TokenStream, syn::Error> {
         impl #builder_name {
             #(#builder_methods)*
 
-            pub fn build(&mut self) -> Result<#struct_name, Box<dyn std::error::Error>> {
+            pub fn build(&mut self) -> Result<#struct_name, String> {
                 Ok(#struct_name {
                     #(#builder_results,)*
                 })
@@ -81,7 +81,7 @@ fn generate_builder(input: DeriveInput) -> Result<TokenStream, syn::Error> {
 }
 
 struct FieldInfo<'a> {
-    name: Ident,
+    name: &'a Ident,
     ty: &'a Type,
     is_optional: bool,
 }
@@ -89,43 +89,36 @@ struct FieldInfo<'a> {
 struct FieldsInfo<'a>(Vec<FieldInfo<'a>>);
 
 impl FieldsInfo<'_> {
-    fn new(input: &DeriveInput) -> Result<FieldsInfo, syn::Error> {
-        let named_fields = named_fields_iter(&input).ok_or(syn::Error::new(
-            Span::call_site(),
-            "Cannot generate builder for this type",
-        ))?;
-
-        let fields: Option<Vec<_>> = named_fields
-            .map(|f| {
-                let name = f.ident.clone()?;
-                let (ty, is_optional) = read_field_type(&f.ty);
-                Some(FieldInfo {
-                    name,
-                    ty,
-                    is_optional,
-                })
-            })
-            .collect();
-        let fields = fields.ok_or(syn::Error::new(
-            Span::call_site(),
-            "Cannot generate builder for unnamed field",
-        ))?;
-
-        Ok(FieldsInfo(fields))
-    }
-
-    fn for_each<F: std::ops::Fn(&FieldInfo) -> TokenStream>(&self, func: F) -> Vec<TokenStream> {
+    fn expand<F: std::ops::Fn(&FieldInfo) -> TokenStream>(&self, func: F) -> Vec<TokenStream> {
         self.0.iter().map(|f| func(f)).collect()
     }
 }
 
-fn named_fields_iter(input: &DeriveInput) -> Option<impl Iterator<Item = &Field>> {
+fn read_fields(input: &DeriveInput) -> Result<FieldsInfo, syn::Error> {
     match &input.data {
-        Data::Struct(DataStruct {
-            fields: Fields::Named(FieldsNamed { named, .. }),
-            ..
-        }) => Some(named.iter()),
-        _ => None,
+        Data::Struct(data) => match &data.fields {
+            Fields::Named(FieldsNamed { named, .. }) => {
+                Ok(FieldsInfo(named.iter().map(read_field).collect()))
+            }
+            _ => Err(syn::Error::new(
+                data.fields.span(),
+                "Builders may only be derived for structs with named fields.",
+            )),
+        },
+        _ => Err(syn::Error::new(
+            input.ident.span(),
+            "Builders may only be derived for structs.",
+        )),
+    }
+}
+
+fn read_field(field: &syn::Field) -> FieldInfo {
+    let name = field.ident.as_ref().expect("Expected named field");
+    let (ty, is_optional) = read_field_type(&field.ty);
+    FieldInfo {
+        name,
+        ty,
+        is_optional,
     }
 }
 

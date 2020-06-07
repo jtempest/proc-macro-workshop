@@ -1,0 +1,17 @@
+error: Builders may only be derived for structs with named fields.
+ --> $DIR/01-fail-on-incompatible-types.rs:4:24
+  |
+4 | pub struct EmptyCommand();
+  |                        ^^
+
+error: Builders may only be derived for structs with named fields.
+ --> $DIR/01-fail-on-incompatible-types.rs:7:24
+  |
+7 | pub struct TupleCommand(String, Vec<String>, Vec<String>, String);
+  |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: Builders may only be derived for structs.
+  --> $DIR/01-fail-on-incompatible-types.rs:10:10
+   |
+10 | pub enum EnumCommand {
+   |          ^^^^^^^^^^^
