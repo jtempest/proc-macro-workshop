@@ -27,13 +27,13 @@ fn generate_builder(input: DeriveInput) -> Result<TokenStream, syn::Error> {
 
     let builder_fields = fields.expand(|field| {
         let name = &field.name;
-        let ty = &field.ty;
+        let ty = &field.ty.ty;
         quote! { #name: Option<#ty> }
     });
 
     let builder_methods = fields.expand(|field| {
         let name = &field.name;
-        let ty = &field.ty;
+        let ty = &field.ty.ty;
         quote! {
             fn #name(&mut self, #name: #ty) -> &mut Self {
                 self.#name = Some(#name);
@@ -44,7 +44,7 @@ fn generate_builder(input: DeriveInput) -> Result<TokenStream, syn::Error> {
 
     let builder_results = fields.expand(|field| {
         let name = &field.name;
-        if field.is_optional {
+        if field.ty.is_optional {
             quote! { #name: self.#name.clone() }
         } else {
             quote! {
@@ -80,10 +80,14 @@ fn generate_builder(input: DeriveInput) -> Result<TokenStream, syn::Error> {
     })
 }
 
-struct FieldInfo<'a> {
-    name: &'a Ident,
+struct FieldTypeInfo<'a> {
     ty: &'a Type,
     is_optional: bool,
+}
+
+struct FieldInfo<'a> {
+    name: &'a Ident,
+    ty: FieldTypeInfo<'a>,
 }
 
 struct FieldsInfo<'a>(Vec<FieldInfo<'a>>);
@@ -113,31 +117,52 @@ fn read_fields(input: &DeriveInput) -> Result<FieldsInfo, syn::Error> {
 }
 
 fn read_field(field: &syn::Field) -> FieldInfo {
-    let name = field.ident.as_ref().expect("Expected named field");
-    let (ty, is_optional) = read_field_type(&field.ty);
     FieldInfo {
-        name,
-        ty,
-        is_optional,
+        name: field.ident.as_ref().expect("Expected named field"),
+        ty: read_field_type(&field.ty),
     }
 }
 
-// (ty, is_optional): if optional, returns the type contained by the Option.
-fn read_field_type(ty: &Type) -> (&Type, bool) {
+fn read_field_type(ty: &Type) -> FieldTypeInfo {
+    let option_ty = read_option_type(ty);
+    FieldTypeInfo {
+        ty: option_ty.unwrap_or(ty),
+        is_optional: option_ty.is_some(),
+    }
+}
+
+fn read_option_type(ty: &Type) -> Option<&Type> {
+    let ty = read_type(ty)?;
+    if ty.ident == "Option" {
+        Some(ty.first_generic_arg?)
+    } else {
+        None
+    }
+}
+
+struct TypeInfo<'a> {
+    ident: &'a Ident,
+    first_generic_arg: Option<&'a Type>,
+}
+
+fn read_type(ty: &Type) -> Option<TypeInfo> {
     if let Type::Path(path) = ty {
         if path.qself.is_none() {
-            let segments = &path.path.segments;
-            if segments.len() > 0 {
-                let seg0 = &segments[0];
-                if seg0.ident.to_string() == "Option" {
-                    if let PathArguments::AngleBracketed(args) = &seg0.arguments {
-                        if let Some(GenericArgument::Type(optional_type)) = args.args.first() {
-                            return (optional_type, true);
-                        }
-                    }
+            assert!(path.path.segments.len() > 0);
+            let seg0 = &path.path.segments[0];
+
+            let mut first_generic_arg = None;
+            if let PathArguments::AngleBracketed(args) = &seg0.arguments {
+                if let Some(GenericArgument::Type(optional_type)) = args.args.first() {
+                    first_generic_arg = Some(optional_type);
                 }
             }
+
+            return Some(TypeInfo {
+                ident: &seg0.ident,
+                first_generic_arg,
+            });
         }
     }
-    (ty, false)
+    None
 }
